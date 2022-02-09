@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import List
+from typing import List, Tuple
 import requests
 from argparse import ArgumentParser
 
@@ -62,7 +62,7 @@ class UmbriaApi:
     def update_tvls_on(self, network: Networks):
         self.tvls[network.value] = self.get_tvls_on(network)
 
-    def get_umbria_apy(self, network: Networks) -> float:
+    def get_umbria_apr(self, network: Networks) -> Tuple[float, List[Tuple]]:
         if not self.apys.get(network.value):
             self.update_apys_on(network)
 
@@ -75,28 +75,34 @@ class UmbriaApi:
         coins = set([*apys.keys(), *tvls.keys()])
 
         pools = [
-            UmbriaPool(coin=coin,
-                       apy=apys.get(coin),
-                       tvl=tvls.get(coin),
-                       network=network) for coin in coins
+            UmbriaPool(
+                coin=coin, apy=apys.get(coin), tvl=tvls.get(coin), network=network
+            )
+            for coin in coins
         ]
         umbria = [p for p in pools if p.coin == "UMBR"][0]
 
-        daily_umbr_rewards = sum([
-            0.003 * p.calculate_daily_volume() for p in pools
+        itemized_daily_rewards_usd = [
+            (0.003 * p.calculate_daily_volume(), p.coin)
+            for p in pools
             if p.coin != "UMBR"
-        ])
+        ]
 
-        apr = daily_umbr_rewards * 365 / umbria.tvl
-        return apr_to_apy(apr)
+        daily_umbr_rewards = sum([reward for reward, _ in itemized_daily_rewards_usd])
+
+        itemized_apr = [
+            (reward * 365 / umbria.tvl, coin)
+            for (reward, coin) in itemized_daily_rewards_usd
+        ]
+        apr = sum([apr for (apr, _) in itemized_apr])
+        return (apr, itemized_apr)
 
     def get_apys_on(self, network: Networks) -> dict:
         endpoint = f"{self.base_url}/api/pool/getApyAll/?network={network}"
         resp = requests.get(endpoint)
         apys = resp.json()
         return {
-            ADDRESSES.get(network.value).get(k, k): float(v)
-            for k, v in apys.items()
+            ADDRESSES.get(network.value).get(k, k): float(v) for k, v in apys.items()
         }
 
     def get_tvls_on(self, network: Networks) -> dict:
@@ -108,7 +114,7 @@ class UmbriaApi:
 
     def get_all_staked(self, address) -> dict:
         """Get all staked token amounts across all chains
-        
+
         Returns:
             dict {token_symbol: balance}
         """
@@ -122,8 +128,9 @@ class UmbriaApi:
                 token_name = ADDRESSES.get(network.value).get(token)
                 endpoint = f"{self.base_url}/api/pool/getStaked/?tokenAddress={token}&userAddress={address}&network={network.value}"
                 resp = requests.get(endpoint).json()
-                staked_bal[token_name] = staked_bal.get(
-                    token_name, 0) + float(resp['amount']) / 10e17
+                staked_bal[token_name] = (
+                    staked_bal.get(token_name, 0) + float(resp["amount"]) / 10e17
+                )
         return staked_bal
 
 
@@ -155,14 +162,14 @@ def apr_to_apy(apr, n: float = 365) -> float:
         float: compounded apy
 
     """
-    apy = (1 + (apr / n))**n - 1
+    apy = (1 + (apr / n)) ** n - 1
     return apy
 
 
 def main():
     api = UmbriaApi()
     network = Networks.MATIC
-    umbr_apy = api.get_umbria_apy(network)
+    umbr_apy = api.get_umbria_apr(network)
 
     print("-------------------------------------------")
     print(f"Umbr APY on {network}: {umbr_apy*100:.2f}%")
